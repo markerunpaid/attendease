@@ -1,13 +1,15 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 
 // ===== ESP32 Hotspot Settings =====
 const char* hotspot_ssid = "ClassAttendance_Prof001";
 const char* hotspot_password = "Class123";
 
-// ===== Your Flask Server URL =====
-const char* flask_server_url = "http://192.168.4.2:5000";
+// ===== Dynamic Flask Server Discovery =====
+String flask_server_url = "";  // Will be discovered dynamically
+const int FLASK_PORT = 5000;
 
 // ===== Gateway Token (random, generated on startup) =====
 String gateway_token = "";
@@ -17,12 +19,18 @@ DNSServer dnsServer;
 WebServer server(80);
 const byte DNS_PORT = 53;
 
+// Discovery state
+bool serverDiscovered = false;
+
 // ===== Function Declarations =====
 void generateGatewayToken();
 void startHotspot();
 void startDNSServer();
 void startWebServer();
+void discoverFlaskServer();
 void handleRedirect();
+bool pingFlaskServer(String url);
+void showLoadingPage();
 
 void setup() {
   Serial.begin(115200);
@@ -33,24 +41,107 @@ void setup() {
   // Generate unique gateway token on startup
   generateGatewayToken();
   
-  // Start hotspot
+  // Start hotspot FIRST
   startHotspot();
   
-  // Start DNS interception
+  // Start DNS interception (before discovery, so captive portal works immediately)
   startDNSServer();
   
-  // Start web redirect server
+  // Start web redirect server (will show loading page while discovering)
   startWebServer();
   
-  Serial.println("\n✓ ESP32 Ready!");
-  Serial.print("Gateway Token: ");
+  Serial.println("\n✓ ESP32 Web Server Ready - Students can connect now!");
+  Serial.println("⏳ Discovering Flask server in background...");
+  
+  // Now discover Flask server (non-blocking for students)
+  discoverFlaskServer();
+  
+  if (flask_server_url != "") {
+    Serial.print("✓ Flask Server: ");
+    Serial.println(flask_server_url);
+    serverDiscovered = true;
+  } else {
+    Serial.println("⚠ Flask server not found yet. Showing loading page to students.");
+  }
+  
+  Serial.print("\n✓ Gateway Token: ");
   Serial.println(gateway_token);
+  Serial.println("\n===== System Ready =====\n");
 }
 
 void loop() {
   dnsServer.processNextRequest();
   server.handleClient();
+  
+  // Periodically rediscover if server not found or check health (every 30 seconds)
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck > 30000) {
+    if (flask_server_url == "") {
+      Serial.println("🔄 Retrying Flask server discovery...");
+      discoverFlaskServer();
+      if (flask_server_url != "") {
+        serverDiscovered = true;
+        Serial.println("✓ Flask server now available!");
+      }
+    } else if (!pingFlaskServer(flask_server_url + "/health")) {
+      Serial.println("⚠ Flask server unreachable, rediscovering...");
+      flask_server_url = "";
+      serverDiscovered = false;
+      discoverFlaskServer();
+    }
+    lastCheck = millis();
+  }
+  
   delay(10);
+}
+
+// ===== Discover Flask Server by Scanning Subnet =====
+void discoverFlaskServer() {
+  Serial.println("\n🔍 Discovering Flask server on subnet 192.168.4.x...");
+  
+  // Scan IPs from .2 to .20 (reasonable range)
+  for (int i = 2; i <= 20; i++) {
+    String testIP = "192.168.4." + String(i);
+    String url = "http://" + testIP + ":" + String(FLASK_PORT);
+    
+    Serial.print("  Trying ");
+    Serial.print(testIP);
+    Serial.print("...");
+    
+    if (pingFlaskServer(url + "/health")) {
+      flask_server_url = url;
+      Serial.println(" ✓ FOUND!");
+      Serial.print("✓ Flask server discovered at: ");
+      Serial.println(flask_server_url);
+      return;
+    }
+    Serial.println(" ✗");
+    delay(50); // Small delay between attempts
+  }
+  
+  Serial.println("⚠ Flask server not found in subnet. Will retry in 30 seconds.");
+  flask_server_url = "";
+}
+
+// ===== Ping Flask Server Health Endpoint =====
+bool pingFlaskServer(String url) {
+  HTTPClient http;
+  http.setTimeout(1500);  // 1.5 second timeout per attempt
+  
+  http.begin(url);
+  int httpCode = http.GET();
+  
+  bool success = false;
+  if (httpCode == 200) {
+    String payload = http.getString();
+    // Check if response contains "AttendEase" to verify it's our server
+    if (payload.indexOf("AttendEase") >= 0 || payload.indexOf("attendease") >= 0) {
+      success = true;
+    }
+  }
+  
+  http.end();
+  return success;
 }
 
 // ===== Generate Random Gateway Token =====
@@ -62,9 +153,6 @@ void generateGatewayToken() {
     int randomIndex = random(characters.length());
     gateway_token += characters[randomIndex];
   }
-  
-  Serial.print("Generated Gateway Token: ");
-  Serial.println(gateway_token);
 }
 
 // ===== Start Hotspot =====
@@ -80,10 +168,10 @@ void startHotspot() {
   Serial.println("✓ Hotspot started!");
   Serial.print("  SSID: ");
   Serial.println(hotspot_ssid);
-  Serial.print("  IP: ");
+  Serial.print("  Password: ");
+  Serial.println(hotspot_password);
+  Serial.print("  Gateway IP: ");
   Serial.println(WiFi.softAPIP());
-
-  Serial.println("✓ DNS Server ready");
 }
 
 // ===== Start DNS Server =====
@@ -99,14 +187,107 @@ void startWebServer() {
   Serial.println("✓ Web Server started on port 80");
 }
 
+// ===== Show Loading Page (Beautiful Design) =====
+void showLoadingPage() {
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>AttendEase - Initializing</title>";
+  html += "<style>";
+  html += "* { margin: 0; padding: 0; box-sizing: border-box; }";
+  html += "body {";
+  html += "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;";
+  html += "  background: #000000;";
+  html += "  min-height: 100vh;";
+  html += "  display: flex;";
+  html += "  align-items: center;";
+  html += "  justify-content: center;";
+  html += "  padding: 20px;";
+  html += "}";
+
+  html += ".container {";
+  html += "  background: #0a0f0a;";
+  html += "  border-radius: 20px;";
+  html += "  padding: 50px 40px;";
+  html += "  text-align: center;";
+  html += "  box-shadow: 0 0 25px rgba(0,255,0,0.4);";
+  html += "  max-width: 450px;";
+  html += "  width: 100%;";
+  html += "}";
+
+  html += "h1 { color: #00ff80; font-size: 28px; margin-bottom: 10px; }";
+  html += "p { color: #8cffc5; font-size: 16px; line-height: 1.6; margin-bottom: 30px; }";
+
+  html += ".spinner {";
+  html += "  border: 4px solid #003300;";
+  html += "  border-top: 4px solid #00ff80;";
+  html += "  border-radius: 50%;";
+  html += "  width: 60px;";
+  html += "  height: 60px;";
+  html += "  animation: spin 1s linear infinite;";
+  html += "  margin: 0 auto 20px;";
+  html += "}";
+
+  html += "@keyframes spin {";
+  html += "  0% { transform: rotate(0deg); }";
+  html += "  100% { transform: rotate(360deg); }";
+  html += "}";
+
+  html += ".status {";
+  html += "  background: #001900;";
+  html += "  padding: 15px;";
+  html += "  border-radius: 10px;";
+  html += "  color: #00ff9d;";
+  html += "  font-size: 14px;";
+  html += "  margin-top: 20px;";
+  html += "  border-left: 4px solid #00ff66;";
+  html += "}";
+
+  html += ".countdown {";
+  html += "  font-weight: bold;";
+  html += "  color: #00ff80;";
+  html += "  font-size: 18px;";
+  html += "}";
+
+  html += "</style></head><body>";
+  html += "<div class='container'>";
+  html += "<div class='spinner'></div>";
+  html += "<h1>⚙️ System Initializing</h1>";
+  html += "<p>We're connecting to the attendance server.<br>This will only take a moment...</p>";
+  html += "<div class='status'>";
+  html += "🔍 Scanning network for server...<br>";
+  html += "<span class='countdown'>Auto-refresh in 3 seconds</span>";
+  html += "</div>";
+  html += "</div>";
+  html += "<script>";
+  html += "let countdown = 3;";
+  html += "setInterval(() => {";
+  html += "  countdown--;";
+  html += "  if (countdown <= 0) location.reload();";
+  html += "  document.querySelector('.countdown').textContent = 'Auto-refresh in ' + countdown + ' seconds';";
+  html += "}, 1000);";
+  html += "</script>";
+  html += "</body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+
 // ===== Redirect to Flask Server with Gateway Token =====
 void handleRedirect() {
+  // Check if Flask server is discovered
+  if (flask_server_url == "" || !serverDiscovered) {
+    // Show beautiful loading page while searching for server
+    showLoadingPage();
+    Serial.println("👤 Student connected - Showing loading page (server not ready)");
+    return;
+  }
+  
   // Build redirect URL with gateway token
   String redirectUrl = flask_server_url;
   redirectUrl += "/?gateway_token=";
   redirectUrl += gateway_token;
   
-  Serial.print("Redirecting to: ");
+  Serial.print("👤 Student connected - Redirecting to: ");
   Serial.println(redirectUrl);
   
   // Set gateway token in cookie
@@ -116,5 +297,5 @@ void handleRedirect() {
   
   server.sendHeader("Set-Cookie", setCookieHeader, true);
   server.sendHeader("Location", redirectUrl, true);
-  server.send(302, "text/plain", "");
+  server.send(302, "text/plain", "Redirecting to attendance system...");
 }

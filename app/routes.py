@@ -3,6 +3,19 @@ from . import services
 
 bp = Blueprint('main', __name__)
 
+# --- Health Check Endpoint (for ESP32 discovery) ---
+@bp.route('/health')
+def health_check():
+    """
+    Health check endpoint for ESP32 discovery.
+    Returns 200 OK with service identifier.
+    """
+    return jsonify({
+        "status": "ok",
+        "service": "AttendEase",
+        "version": "1.0"
+    }), 200
+
 # --- HTML Page Routes ---
 @bp.route('/')
 def index():
