@@ -73,9 +73,9 @@ void loop() {
   dnsServer.processNextRequest();
   server.handleClient();
   
-  // Periodically rediscover if server not found or check health (every 30 seconds)
+  // Periodically rediscover if server not found or check health (every 10 seconds)
   static unsigned long lastCheck = 0;
-  if (millis() - lastCheck > 30000) {
+  if (millis() - lastCheck > 10000) {
     if (flask_server_url == "") {
       Serial.println("🔄 Retrying Flask server discovery...");
       discoverFlaskServer();
@@ -119,7 +119,7 @@ void discoverFlaskServer() {
     delay(50); // Small delay between attempts
   }
   
-  Serial.println("⚠ Flask server not found in subnet. Will retry in 30 seconds.");
+  Serial.println("⚠ Flask server not found in subnet. Will retry in 10 seconds.");
   flask_server_url = "";
 }
 
